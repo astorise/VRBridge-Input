@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.VRBridgeInput" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#1A237E</item>
+        <item name="colorPrimaryVariant">#000051</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
