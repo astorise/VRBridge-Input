@@ -83,11 +83,13 @@ object HidReportConfig {
         0xC0.toByte()                  // END_COLLECTION
     )
 
-    val SDP_SETTINGS = BluetoothHidDeviceAppSdpSettings(
-        "VRBridge HID",
-        "Bluetooth HID proxy for Meta Quest 3",
-        "VRBridge",
-        BluetoothHidDevice.SUBCLASS1_COMBO,
-        DESCRIPTOR
-    )
+    val SDP_SETTINGS by lazy {
+        BluetoothHidDeviceAppSdpSettings(
+            "VRBridge HID",
+            "Bluetooth HID proxy for Meta Quest 3",
+            "VRBridge",
+            BluetoothHidDevice.SUBCLASS1_COMBO,
+            DESCRIPTOR
+        )
+    }
 }

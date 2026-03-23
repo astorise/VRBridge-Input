@@ -12,7 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import java.util.concurrent.Executors
 
-class HidForegroundService : Service() {
+class HidForegroundService : Service(), IBluetoothSender {
 
     // -------------------------------------------------------------------------
     // Public interface for the bound Activity
@@ -131,12 +131,12 @@ class HidForegroundService : Service() {
     // Report sending
     // -------------------------------------------------------------------------
 
-    fun sendKeyboardReport(report: ByteArray) {
+    override fun sendKeyboardReport(report: ByteArray) {
         val host = connectedHost ?: return
         hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_KEYBOARD.toInt(), report)
     }
 
-    fun sendMouseReport(report: ByteArray) {
+    override fun sendMouseReport(report: ByteArray) {
         val host = connectedHost ?: return
         hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_MOUSE.toInt(), report)
     }

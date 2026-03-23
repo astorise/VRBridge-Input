@@ -160,7 +160,7 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
     // -------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val service = hidService ?: return super.dispatchKeyEvent(event)
+        val service: IBluetoothSender = hidService ?: return super.dispatchKeyEvent(event)
 
         val modifiers = AzertyToQwertyMapper.getModifierByte(event.metaState)
         val usage     = AzertyToQwertyMapper.getHidUsage(event.keyCode)
@@ -184,7 +184,7 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
     // -------------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val service = hidService ?: return super.onTouchEvent(event)
+        val service: IBluetoothSender = hidService ?: return super.onTouchEvent(event)
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -221,7 +221,7 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
     // -------------------------------------------------------------------------
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        val service = hidService ?: return super.onGenericMotionEvent(event)
+        val service: IBluetoothSender = hidService ?: return super.onGenericMotionEvent(event)
 
         if (event.source and InputDevice.SOURCE_MOUSE != InputDevice.SOURCE_MOUSE) {
             return super.onGenericMotionEvent(event)
