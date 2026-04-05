@@ -11,6 +11,10 @@ import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 
 class HidForegroundService : Service(), IBluetoothSender {
@@ -50,9 +54,9 @@ class HidForegroundService : Service(), IBluetoothSender {
         super.onCreate()
         createNotificationChannel()
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-        Log.d(TAG, "onCreate: adapter=${adapter != null}, enabled=${adapter?.isEnabled}")
+        log("onCreate: adapter=${adapter != null}, enabled=${adapter?.isEnabled}")
         val gotProxy = adapter?.getProfileProxy(this, profileListener, BluetoothProfile.HID_DEVICE)
-        Log.d(TAG, "getProfileProxy(HID_DEVICE) returned $gotProxy")
+        log("getProfileProxy(HID_DEVICE) returned $gotProxy")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,7 +86,7 @@ class HidForegroundService : Service(), IBluetoothSender {
 
     private val profileListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-            Log.d(TAG, "profileListener.onServiceConnected: profile=$profile")
+            log("profileListener.onServiceConnected: profile=$profile")
             if (profile == BluetoothProfile.HID_DEVICE) {
                 hidDevice = proxy as BluetoothHidDevice
                 val registered = hidDevice?.registerApp(
@@ -92,12 +96,12 @@ class HidForegroundService : Service(), IBluetoothSender {
                     callbackExecutor,
                     hidCallback
                 )
-                Log.d(TAG, "registerApp() returned $registered")
+                log("registerApp() returned $registered")
             }
         }
 
         override fun onServiceDisconnected(profile: Int) {
-            Log.d(TAG, "profileListener.onServiceDisconnected: profile=$profile")
+            log("profileListener.onServiceDisconnected: profile=$profile")
             if (profile == BluetoothProfile.HID_DEVICE) {
                 hidDevice = null
             }
@@ -110,11 +114,11 @@ class HidForegroundService : Service(), IBluetoothSender {
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            Log.d(TAG, "onAppStatusChanged: registered=$registered, device=${pluggedDevice?.address}")
+            log("onAppStatusChanged: registered=$registered, device=${pluggedDevice?.address}")
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
-            Log.d(TAG, "onConnectionStateChanged: device=${device.address}, state=$state")
+            log("onConnectionStateChanged: device=${device.address}, state=$state")
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connectedHost = device
@@ -130,7 +134,7 @@ class HidForegroundService : Service(), IBluetoothSender {
         }
 
         override fun onGetReport(device: BluetoothDevice, type: Byte, id: Byte, bufferSize: Int) {
-            Log.d(TAG, "onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
+            log("onGetReport: type=$type, id=$id, bufferSize=$bufferSize")
             hidDevice?.replyReport(device, type, id, ByteArray(bufferSize))
         }
     }
@@ -142,13 +146,13 @@ class HidForegroundService : Service(), IBluetoothSender {
     override fun sendKeyboardReport(report: ByteArray) {
         val host = connectedHost ?: return
         val result = hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_KEYBOARD.toInt(), report)
-        Log.v(TAG, "sendKeyboardReport: result=$result")
+        log("sendKeyboardReport: result=$result")
     }
 
     override fun sendMouseReport(report: ByteArray) {
         val host = connectedHost ?: return
         val result = hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_MOUSE.toInt(), report)
-        Log.v(TAG, "sendMouseReport: result=$result")
+        log("sendMouseReport: result=$result")
     }
 
     // -------------------------------------------------------------------------
@@ -176,6 +180,15 @@ class HidForegroundService : Service(), IBluetoothSender {
             .build()
         getSystemService(NotificationManager::class.java)
             .notify(NOTIF_ID, notification)
+    }
+
+    private fun log(msg: String) {
+        log(msg)
+        try {
+            val logFile = File(getExternalFilesDir(null), "vrbridge.log")
+            val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
+            logFile.appendText("$ts $msg\n")
+        } catch (_: Exception) {}
     }
 
     companion object {
