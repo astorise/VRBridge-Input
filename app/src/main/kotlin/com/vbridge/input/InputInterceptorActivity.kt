@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.IBinder
 import android.view.InputDevice
@@ -24,7 +25,9 @@ import com.vbridge.input.databinding.ActivityMainBinding
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.ConnectionListener {
+class InputInterceptorActivity : AppCompatActivity(),
+    HidForegroundService.ConnectionListener,
+    InputManager.InputDeviceListener {
 
     private lateinit var binding: ActivityMainBinding
 
@@ -48,6 +51,10 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
             serviceBound = false
         }
     }
+
+    // USB mouse detection
+    private lateinit var inputManager: InputManager
+    private var externalMouseConnected = false
 
     // Touch tracking for trackpad
     private var lastTouchX = 0f
@@ -80,6 +87,10 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
             insets
         }
 
+        inputManager = getSystemService(INPUT_SERVICE) as InputManager
+        inputManager.registerInputDeviceListener(this, null)
+        externalMouseConnected = hasExternalMouse()
+
         requestPermissionsIfNeeded()
     }
 
@@ -96,6 +107,11 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
             unbindService(serviceConnection)
             serviceBound = false
         }
+    }
+
+    override fun onDestroy() {
+        inputManager.unregisterInputDeviceListener(this)
+        super.onDestroy()
     }
 
     // -------------------------------------------------------------------------
@@ -184,6 +200,8 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
     // -------------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (externalMouseConnected) return true  // USB mouse takes priority
+
         val service: IBluetoothSender = hidService ?: return super.onTouchEvent(event)
 
         when (event.actionMasked) {
@@ -250,6 +268,34 @@ class InputInterceptorActivity : AppCompatActivity(), HidForegroundService.Conne
     }
 
     private fun Int.clampToByte(): Int = this.coerceIn(-127, 127)
+
+    // -------------------------------------------------------------------------
+    // InputDeviceListener – USB mouse hot-plug detection
+    // -------------------------------------------------------------------------
+
+    override fun onInputDeviceAdded(deviceId: Int) {
+        if (isExternalMouse(deviceId)) {
+            externalMouseConnected = true
+        }
+    }
+
+    override fun onInputDeviceRemoved(deviceId: Int) {
+        // Re-scan all remaining devices since the removed one is gone
+        externalMouseConnected = hasExternalMouse()
+    }
+
+    override fun onInputDeviceChanged(deviceId: Int) {
+        externalMouseConnected = hasExternalMouse()
+    }
+
+    private fun hasExternalMouse(): Boolean =
+        InputDevice.getDeviceIds().any { isExternalMouse(it) }
+
+    private fun isExternalMouse(deviceId: Int): Boolean {
+        val device = InputDevice.getDevice(deviceId) ?: return false
+        return device.sources and InputDevice.SOURCE_MOUSE == InputDevice.SOURCE_MOUSE
+                && !device.isVirtual
+    }
 
     companion object {
         private const val TAP_TIMEOUT_MS = 200L
