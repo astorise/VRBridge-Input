@@ -7,9 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.IBinder
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -52,9 +55,11 @@ class InputInterceptorActivity : AppCompatActivity(),
         }
     }
 
-    // USB mouse detection
+    // External device detection
     private lateinit var inputManager: InputManager
     private var externalMouseConnected = false
+    private var physicalKeyboardConnected = false
+    private var questConnected = false
 
     // Touch tracking for trackpad
     private var lastTouchX = 0f
@@ -90,6 +95,35 @@ class InputInterceptorActivity : AppCompatActivity(),
         inputManager = getSystemService(INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(this, null)
         externalMouseConnected = hasExternalMouse()
+        physicalKeyboardConnected = hasPhysicalKeyboard()
+        updateKeyboardInputVisibility()
+
+        binding.etKeyboardInput.addTextChangedListener(object : TextWatcher {
+            private var previousText = ""
+            override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {
+                previousText = s.toString()
+            }
+            override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable) {
+                val service: IBluetoothSender = hidService ?: return
+                val newText = s.toString()
+                if (newText.length > previousText.length) {
+                    // Characters were added — send each new character
+                    val added = newText.substring(previousText.length)
+                    for (ch in added) {
+                        sendCharAsHidKeystroke(service, ch)
+                    }
+                } else if (newText.length < previousText.length) {
+                    // Characters were deleted — send backspace for each
+                    val deletedCount = previousText.length - newText.length
+                    repeat(deletedCount) {
+                        val report = byteArrayOf(0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00)
+                        service.sendKeyboardReport(report)
+                        service.sendKeyboardReport(ByteArray(8))
+                    }
+                }
+            }
+        })
 
         requestPermissionsIfNeeded()
     }
@@ -158,17 +192,21 @@ class InputInterceptorActivity : AppCompatActivity(),
     }
 
     private fun setStatusConnected(deviceName: String?) {
+        questConnected = true
         val label = if (deviceName != null)
             getString(R.string.status_connected, deviceName)
         else
             getString(R.string.status_connected, "Quest 3")
         binding.tvStatus.text = label
         binding.tvStatus.setBackgroundColor(0xFF006400.toInt())  // dark green
+        updateKeyboardInputVisibility()
     }
 
     private fun setStatusDisconnected() {
+        questConnected = false
         binding.tvStatus.text = getString(R.string.status_disconnected)
         binding.tvStatus.setBackgroundColor(0xFFCC0000.toInt())  // dark red
+        updateKeyboardInputVisibility()
     }
 
     // -------------------------------------------------------------------------
@@ -176,6 +214,12 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // When using virtual keyboard (no physical keyboard), let the EditText handle input
+        // via TextWatcher — don't intercept IME key events
+        if (!physicalKeyboardConnected && binding.etKeyboardInput.hasFocus()) {
+            return super.dispatchKeyEvent(event)
+        }
+
         val service: IBluetoothSender = hidService ?: return super.dispatchKeyEvent(event)
 
         val modifiers = AzertyToQwertyMapper.getModifierByte(event.metaState)
@@ -274,18 +318,23 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun onInputDeviceAdded(deviceId: Int) {
-        if (isExternalMouse(deviceId)) {
-            externalMouseConnected = true
+        if (isExternalMouse(deviceId)) externalMouseConnected = true
+        if (isPhysicalKeyboard(deviceId)) {
+            physicalKeyboardConnected = true
+            runOnUiThread { updateKeyboardInputVisibility() }
         }
     }
 
     override fun onInputDeviceRemoved(deviceId: Int) {
-        // Re-scan all remaining devices since the removed one is gone
         externalMouseConnected = hasExternalMouse()
+        physicalKeyboardConnected = hasPhysicalKeyboard()
+        runOnUiThread { updateKeyboardInputVisibility() }
     }
 
     override fun onInputDeviceChanged(deviceId: Int) {
         externalMouseConnected = hasExternalMouse()
+        physicalKeyboardConnected = hasPhysicalKeyboard()
+        runOnUiThread { updateKeyboardInputVisibility() }
     }
 
     private fun hasExternalMouse(): Boolean =
@@ -295,6 +344,75 @@ class InputInterceptorActivity : AppCompatActivity(),
         val device = InputDevice.getDevice(deviceId) ?: return false
         return device.sources and InputDevice.SOURCE_MOUSE == InputDevice.SOURCE_MOUSE
                 && !device.isVirtual
+    }
+
+    private fun hasPhysicalKeyboard(): Boolean =
+        resources.configuration.keyboard == Configuration.KEYBOARD_QWERTY
+
+    private fun isPhysicalKeyboard(deviceId: Int): Boolean {
+        val device = InputDevice.getDevice(deviceId) ?: return false
+        return device.sources and InputDevice.SOURCE_KEYBOARD == InputDevice.SOURCE_KEYBOARD
+                && device.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+                && !device.isVirtual
+    }
+
+    private fun updateKeyboardInputVisibility() {
+        val show = questConnected && !physicalKeyboardConnected
+        binding.etKeyboardInput.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun sendCharAsHidKeystroke(service: IBluetoothSender, ch: Char) {
+        val (usage, shift) = charToHidUsage(ch) ?: return
+        val modifier: Byte = if (shift) 0x02 else 0x00  // Left Shift
+        val report = byteArrayOf(modifier, 0x00, usage, 0x00, 0x00, 0x00, 0x00, 0x00)
+        service.sendKeyboardReport(report)
+        service.sendKeyboardReport(ByteArray(8))  // release
+    }
+
+    /** Maps a character to its HID usage ID and whether Shift is needed. */
+    private fun charToHidUsage(ch: Char): Pair<Byte, Boolean>? {
+        return when (ch) {
+            in 'a'..'z' -> Pair((0x04 + (ch - 'a')).toByte(), false)
+            in 'A'..'Z' -> Pair((0x04 + (ch - 'A')).toByte(), true)
+            in '1'..'9' -> Pair((0x1E + (ch - '1')).toByte(), false)
+            '0' -> Pair(0x27.toByte(), false)
+            '\n', '\r' -> Pair(0x28.toByte(), false)  // Enter
+            ' ' -> Pair(0x2C.toByte(), false)          // Space
+            '-' -> Pair(0x2D.toByte(), false)
+            '=' -> Pair(0x2E.toByte(), false)
+            '[' -> Pair(0x2F.toByte(), false)
+            ']' -> Pair(0x30.toByte(), false)
+            '\\' -> Pair(0x31.toByte(), false)
+            ';' -> Pair(0x33.toByte(), false)
+            '\'' -> Pair(0x34.toByte(), false)
+            '`' -> Pair(0x35.toByte(), false)
+            ',' -> Pair(0x36.toByte(), false)
+            '.' -> Pair(0x37.toByte(), false)
+            '/' -> Pair(0x38.toByte(), false)
+            '!' -> Pair(0x1E.toByte(), true)
+            '@' -> Pair(0x1F.toByte(), true)
+            '#' -> Pair(0x20.toByte(), true)
+            '$' -> Pair(0x21.toByte(), true)
+            '%' -> Pair(0x22.toByte(), true)
+            '^' -> Pair(0x23.toByte(), true)
+            '&' -> Pair(0x24.toByte(), true)
+            '*' -> Pair(0x25.toByte(), true)
+            '(' -> Pair(0x26.toByte(), true)
+            ')' -> Pair(0x27.toByte(), true)
+            '_' -> Pair(0x2D.toByte(), true)
+            '+' -> Pair(0x2E.toByte(), true)
+            '{' -> Pair(0x2F.toByte(), true)
+            '}' -> Pair(0x30.toByte(), true)
+            '|' -> Pair(0x31.toByte(), true)
+            ':' -> Pair(0x33.toByte(), true)
+            '"' -> Pair(0x34.toByte(), true)
+            '~' -> Pair(0x35.toByte(), true)
+            '<' -> Pair(0x36.toByte(), true)
+            '>' -> Pair(0x37.toByte(), true)
+            '?' -> Pair(0x38.toByte(), true)
+            '\t' -> Pair(0x2B.toByte(), false)  // Tab
+            else -> null
+        }
     }
 
     companion object {
