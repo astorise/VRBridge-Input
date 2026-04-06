@@ -25,6 +25,9 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.vbridge.input.databinding.ActivityMainBinding
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -73,6 +76,17 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        try {
+            onCreateInner(savedInstanceState)
+        } catch (e: Exception) {
+            val sw = StringWriter()
+            e.printStackTrace(PrintWriter(sw))
+            File(filesDir, "crash.log").writeText(sw.toString())
+            throw e
+        }
+    }
+
+    private fun onCreateInner(savedInstanceState: Bundle?) {
         // Edge-to-edge: let the app draw behind system bars
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
