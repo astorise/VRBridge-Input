@@ -183,7 +183,7 @@ class HidForegroundService : Service(), IBluetoothSender {
     }
 
     private fun log(msg: String) {
-        log(msg)
+        Log.d(TAG, msg)
         try {
             val logFile = File(filesDir, "vrbridge.log")
             val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
