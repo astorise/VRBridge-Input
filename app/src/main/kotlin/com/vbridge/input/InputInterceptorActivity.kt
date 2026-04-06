@@ -76,17 +76,12 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        try {
-            onCreateInner(savedInstanceState)
-        } catch (e: Exception) {
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
             val sw = StringWriter()
             e.printStackTrace(PrintWriter(sw))
             File(filesDir, "crash.log").writeText(sw.toString())
-            throw e
         }
-    }
 
-    private fun onCreateInner(savedInstanceState: Bundle?) {
         // Edge-to-edge: let the app draw behind system bars
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
