@@ -253,9 +253,36 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (externalMouseConnected) return true  // USB mouse takes priority
-
+        val isFromMouse = event.source and InputDevice.SOURCE_MOUSE == InputDevice.SOURCE_MOUSE
         val service: IBluetoothSender = hidService ?: return super.onTouchEvent(event)
+
+        // Mouse drag (button held + move) arrives here as touch events
+        if (isFromMouse) {
+            val buttons = buildMouseButtonByte(event.buttonState)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    service.sendMouseReport(byteArrayOf(buttons, 0x00, 0x00, 0x00))
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.x - lastTouchX).roundToInt().clampToByte()
+                    val dy = (event.y - lastTouchY).roundToInt().clampToByte()
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    if (dx != 0 || dy != 0) {
+                        service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), 0x00))
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                }
+            }
+            return true
+        }
+
+        // Touch pad — disabled when USB mouse is connected
+        if (externalMouseConnected) return true
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -278,7 +305,6 @@ class InputInterceptorActivity : AppCompatActivity(),
                 val elapsed   = System.currentTimeMillis() - touchDownTime
                 val totalMove = abs(event.x - touchDownX) + abs(event.y - touchDownY)
                 if (elapsed < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
-                    // Tap → left click then release
                     service.sendMouseReport(byteArrayOf(0x01, 0x00, 0x00, 0x00))
                     service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                 }
@@ -298,13 +324,15 @@ class InputInterceptorActivity : AppCompatActivity(),
             return super.onGenericMotionEvent(event)
         }
 
-        val dx     = event.getAxisValue(MotionEvent.AXIS_X).roundToInt().clampToByte()
-        val dy     = event.getAxisValue(MotionEvent.AXIS_Y).roundToInt().clampToByte()
+        val dx     = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X).roundToInt().clampToByte()
+        val dy     = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).roundToInt().clampToByte()
         val scroll = (-event.getAxisValue(MotionEvent.AXIS_VSCROLL)).roundToInt().clampToByte()
 
         val buttons = buildMouseButtonByte(event.buttonState)
 
-        service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), scroll.toByte()))
+        if (dx != 0 || dy != 0 || scroll != 0 || buttons.toInt() != 0) {
+            service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), scroll.toByte()))
+        }
         return true
     }
 
