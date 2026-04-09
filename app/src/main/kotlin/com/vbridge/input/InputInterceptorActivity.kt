@@ -70,6 +70,8 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var touchDownTime = 0L
     private var touchDownX = 0f
     private var touchDownY = 0f
+    private var secondFingerDown = false
+    private var isRightClick = false
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -291,6 +293,15 @@ class InputInterceptorActivity : AppCompatActivity(),
                 touchDownX   = event.x
                 touchDownY   = event.y
                 touchDownTime = System.currentTimeMillis()
+                secondFingerDown = false
+                isRightClick = false
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                secondFingerDown = true
+                val pointerIndex = event.actionIndex
+                val secondX = event.getX(pointerIndex)
+                // Right-click if 2nd finger is clearly to the right of the 1st
+                isRightClick = (secondX - touchDownX) > RIGHT_CLICK_MIN_OFFSET_PX
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = (event.x - lastTouchX).roundToInt().clampToByte()
@@ -305,7 +316,8 @@ class InputInterceptorActivity : AppCompatActivity(),
                 val elapsed   = System.currentTimeMillis() - touchDownTime
                 val totalMove = abs(event.x - touchDownX) + abs(event.y - touchDownY)
                 if (elapsed < TAP_TIMEOUT_MS && totalMove < TAP_SLOP_PX) {
-                    service.sendMouseReport(byteArrayOf(0x01, 0x00, 0x00, 0x00))
+                    val button: Byte = if (secondFingerDown && isRightClick) 0x02 else 0x01
+                    service.sendMouseReport(byteArrayOf(button, 0x00, 0x00, 0x00))
                     service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                 }
             }
@@ -455,5 +467,6 @@ class InputInterceptorActivity : AppCompatActivity(),
     companion object {
         private const val TAP_TIMEOUT_MS = 200L
         private const val TAP_SLOP_PX    = 10f
+        private const val RIGHT_CLICK_MIN_OFFSET_PX = 80f
     }
 }
