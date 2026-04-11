@@ -3,6 +3,6 @@
     <string name="app_name">VRBridge Input</string>
     <string name="status_disconnected">● Disconnected — waiting for Quest 3</string>
     <string name="status_connected">● Connected to %1$s</string>
-    <string name="trackpad_hint">Swipe to move cursor · Tap to click · Physical keyboard input is forwarded automatically</string>
+    <string name="trackpad_hint">Swipe to move cursor · Tap to click · Two-finger tap for right-click</string>
     <string name="keyboard_input_hint">Tap here to type with virtual keyboard…</string>
 </resources>
