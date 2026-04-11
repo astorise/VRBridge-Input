@@ -24,6 +24,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
 import com.vbridge.input.databinding.ActivityMainBinding
 import java.io.File
 import java.io.PrintWriter
@@ -40,10 +41,12 @@ class InputInterceptorActivity : AppCompatActivity(),
     // Service binding
     private var hidService: HidForegroundService? = null
     private var serviceBound = false
+    private var bluetoothPermissionsGranted = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             hidService = (binder as HidForegroundService.LocalBinder).service
+            hidService?.ensureHidProfileReady()
             hidService?.connectionListener = this@InputInterceptorActivity
             serviceBound = true
             // Reflect current connection state immediately
@@ -136,13 +139,15 @@ class InputInterceptorActivity : AppCompatActivity(),
             }
         })
 
+        bluetoothPermissionsGranted = hasAllRequiredPermissions()
         requestPermissionsIfNeeded()
     }
 
     override fun onStart() {
         super.onStart()
-        val intent = Intent(this, HidForegroundService::class.java)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        if (bluetoothPermissionsGranted) {
+            bindHidService()
+        }
     }
 
     override fun onStop() {
@@ -167,7 +172,13 @@ class InputInterceptorActivity : AppCompatActivity(),
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val allGranted = results.values.all { it }
-        if (allGranted) startHidService()
+        bluetoothPermissionsGranted = allGranted
+        if (allGranted) {
+            startHidService()
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                bindHidService()
+            }
+        }
         // If denied, app remains on screen but cannot connect — status text reflects this
     }
 
@@ -178,8 +189,21 @@ class InputInterceptorActivity : AppCompatActivity(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 !hasPermission(Manifest.permission.POST_NOTIFICATIONS))  add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        if (needed.isEmpty()) startHidService()
+        if (needed.isEmpty()) {
+            bluetoothPermissionsGranted = true
+            startHidService()
+        }
         else permissionLauncher.launch(needed.toTypedArray())
+    }
+
+    private fun hasAllRequiredPermissions(): Boolean {
+        val bluetoothGranted =
+            hasPermission(Manifest.permission.BLUETOOTH_CONNECT) &&
+            hasPermission(Manifest.permission.BLUETOOTH_ADVERTISE)
+        val notificationsGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+        return bluetoothGranted && notificationsGranted
     }
 
     private fun hasPermission(permission: String) =
@@ -188,6 +212,12 @@ class InputInterceptorActivity : AppCompatActivity(),
     private fun startHidService() {
         val intent = Intent(this, HidForegroundService::class.java)
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun bindHidService() {
+        if (serviceBound) return
+        val intent = Intent(this, HidForegroundService::class.java)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     // -------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 package com.vbridge.input
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -7,9 +8,12 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothProfile
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
 import java.io.File
 import java.text.SimpleDateFormat
@@ -43,6 +47,7 @@ class HidForegroundService : Service(), IBluetoothSender {
 
     private var hidDevice: BluetoothHidDevice? = null
     private var connectedHost: BluetoothDevice? = null
+    private var hidProxyRequested = false
 
     val isConnected: Boolean get() = connectedHost != null
 
@@ -53,10 +58,7 @@ class HidForegroundService : Service(), IBluetoothSender {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-        log("onCreate: adapter=${adapter != null}, enabled=${adapter?.isEnabled}")
-        val gotProxy = adapter?.getProfileProxy(this, profileListener, BluetoothProfile.HID_DEVICE)
-        log("getProfileProxy(HID_DEVICE) returned $gotProxy")
+        ensureHidProfileReady()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -67,18 +69,40 @@ class HidForegroundService : Service(), IBluetoothSender {
             .setOngoing(true)
             .build()
         startForeground(NOTIF_ID, notification)
+        ensureHidProfileReady()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        hidDevice?.unregisterApp()
+        if (hasBluetoothPermissions()) {
+            hidDevice?.unregisterApp()
+        }
         val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
         adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hidDevice)
         hidDevice = null
+        hidProxyRequested = false
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent): IBinder = binder
+
+    fun ensureHidProfileReady() {
+        val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
+        log("ensureHidProfileReady: adapter=${adapter != null}, enabled=${adapter?.isEnabled}, permissions=${hasBluetoothPermissions()}")
+        if (!hasBluetoothPermissions()) {
+            log("ensureHidProfileReady: skipping HID initialization until Bluetooth runtime permissions are granted")
+            return
+        }
+        if (hidDevice != null || hidProxyRequested) {
+            return
+        }
+        hidProxyRequested = true
+        val gotProxy = adapter?.getProfileProxy(this, profileListener, BluetoothProfile.HID_DEVICE)
+        log("getProfileProxy(HID_DEVICE) returned $gotProxy")
+        if (gotProxy != true) {
+            hidProxyRequested = false
+        }
+    }
 
     // -------------------------------------------------------------------------
     // Bluetooth profile proxy
@@ -88,7 +112,12 @@ class HidForegroundService : Service(), IBluetoothSender {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
             log("profileListener.onServiceConnected: profile=$profile")
             if (profile == BluetoothProfile.HID_DEVICE) {
+                hidProxyRequested = false
                 hidDevice = proxy as BluetoothHidDevice
+                if (!hasBluetoothPermissions()) {
+                    log("registerApp skipped: Bluetooth runtime permissions are missing")
+                    return
+                }
                 val registered = hidDevice?.registerApp(
                     HidReportConfig.SDP_SETTINGS,
                     /* qosOut */ null,
@@ -104,6 +133,7 @@ class HidForegroundService : Service(), IBluetoothSender {
             log("profileListener.onServiceDisconnected: profile=$profile")
             if (profile == BluetoothProfile.HID_DEVICE) {
                 hidDevice = null
+                hidProxyRequested = false
             }
         }
     }
@@ -145,12 +175,20 @@ class HidForegroundService : Service(), IBluetoothSender {
 
     override fun sendKeyboardReport(report: ByteArray) {
         val host = connectedHost ?: return
+        if (!hasBluetoothPermissions()) {
+            log("sendKeyboardReport skipped: Bluetooth runtime permissions are missing")
+            return
+        }
         val result = hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_KEYBOARD.toInt(), report)
         log("sendKeyboardReport: result=$result")
     }
 
     override fun sendMouseReport(report: ByteArray) {
         val host = connectedHost ?: return
+        if (!hasBluetoothPermissions()) {
+            log("sendMouseReport skipped: Bluetooth runtime permissions are missing")
+            return
+        }
         val result = hidDevice?.sendReport(host, HidReportConfig.REPORT_ID_MOUSE.toInt(), report)
         log("sendMouseReport: result=$result")
     }
@@ -189,6 +227,21 @@ class HidForegroundService : Service(), IBluetoothSender {
             val ts = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
             logFile.appendText("$ts $msg\n")
         } catch (_: Exception) {}
+    }
+
+    private fun hasBluetoothPermissions(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return true
+        }
+        val connectGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
+        val advertiseGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_ADVERTISE
+        ) == PackageManager.PERMISSION_GRANTED
+        return connectGranted && advertiseGranted
     }
 
     companion object {
