@@ -314,8 +314,7 @@ class InputInterceptorActivity : AppCompatActivity(),
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val buttons = effectiveMouseButtons(event)
-                    val dx = (event.x - lastTouchX).roundToInt().clampToByte()
-                    val dy = (event.y - lastTouchY).roundToInt().clampToByte()
+                    val (dx, dy) = resolveMouseMoveDelta(event)
                     lastTouchX = event.x
                     lastTouchY = event.y
                     if (dx != 0 || dy != 0 || buttons != lastMouseButtons) {
@@ -432,6 +431,18 @@ class InputInterceptorActivity : AppCompatActivity(),
         if (buttonState and MotionEvent.BUTTON_SECONDARY != 0) b = b or 0x02
         if (buttonState and MotionEvent.BUTTON_TERTIARY  != 0) b = b or 0x04
         return b.toByte()
+    }
+
+    private fun resolveMouseMoveDelta(event: MotionEvent): Pair<Int, Int> {
+        val relativeDx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X).roundToInt().clampToByte()
+        val relativeDy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).roundToInt().clampToByte()
+        if (relativeDx != 0 || relativeDy != 0) {
+            return relativeDx to relativeDy
+        }
+
+        val absoluteDx = (event.x - lastTouchX).roundToInt().clampToByte()
+        val absoluteDy = (event.y - lastTouchY).roundToInt().clampToByte()
+        return absoluteDx to absoluteDy
     }
 
     private fun effectiveMouseButtons(event: MotionEvent): Byte {
