@@ -56,6 +56,7 @@ class InputInterceptorActivity : AppCompatActivity(),
         }
 
         override fun onServiceDisconnected(name: ComponentName) {
+            resetKeyboardState()
             hidService = null
             serviceBound = false
         }
@@ -68,6 +69,9 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var questConnected = false
     private var lastMouseButtons: Byte = 0x00
     private var latchedMouseButtons: Byte = 0x00
+    private val pressedHidKeysByKeyCode = linkedMapOf<Int, Byte>()
+    private val syntheticShiftKeyCodes = mutableSetOf<Int>()
+    private var pressedModifierMask = 0
 
     // Touch tracking for trackpad
     private var lastTouchX = 0f
@@ -128,13 +132,13 @@ class InputInterceptorActivity : AppCompatActivity(),
                 val service: IBluetoothSender = hidService ?: return
                 val newText = s.toString()
                 if (newText.length > previousText.length) {
-                    // Characters were added — send each new character
+                    // Characters were added - send each new character
                     val added = newText.substring(previousText.length)
                     for (ch in added) {
                         sendCharAsHidKeystroke(service, ch)
                     }
                 } else if (newText.length < previousText.length) {
-                    // Characters were deleted — send backspace for each
+                    // Characters were deleted - send backspace for each
                     val deletedCount = previousText.length - newText.length
                     repeat(deletedCount) {
                         val report = byteArrayOf(0x00, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00)
@@ -158,6 +162,7 @@ class InputInterceptorActivity : AppCompatActivity(),
 
     override fun onStop() {
         super.onStop()
+        resetKeyboardState(hidService)
         if (serviceBound) {
             hidService?.connectionListener = null
             unbindService(serviceConnection)
@@ -185,7 +190,7 @@ class InputInterceptorActivity : AppCompatActivity(),
                 bindHidService()
             }
         }
-        // If denied, app remains on screen but cannot connect — status text reflects this
+        // If denied, app remains on screen but cannot connect - status text reflects this
     }
 
     private fun requestPermissionsIfNeeded() {
@@ -250,6 +255,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     }
 
     private fun setStatusDisconnected() {
+        resetKeyboardState()
         questConnected = false
         binding.tvStatus.text = getString(R.string.status_disconnected)
         binding.tvStatus.setBackgroundColor(0xFFCC0000.toInt())  // dark red
@@ -261,29 +267,36 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        // When using virtual keyboard (no physical keyboard), let the EditText handle input
-        // via TextWatcher — don't intercept IME key events
-        if (!physicalKeyboardConnected && binding.etKeyboardInput.hasFocus()) {
+        val fromPhysicalKeyboard = isPhysicalKeyboardEvent(event)
+        if (!fromPhysicalKeyboard && binding.etKeyboardInput.hasFocus()) {
+            return super.dispatchKeyEvent(event)
+        }
+        if (!fromPhysicalKeyboard) {
             return super.dispatchKeyEvent(event)
         }
 
-        val service: IBluetoothSender = hidService ?: return super.dispatchKeyEvent(event)
+        val service: IBluetoothSender = hidService ?: return true
 
         return when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                service.sendKeyboardReport(buildKeyboardReport(event))
+                if (onPhysicalKeyDown(event)) {
+                    sendCurrentKeyboardReport(service)
+                }
                 true
             }
             KeyEvent.ACTION_UP -> {
-                service.sendKeyboardReport(ByteArray(8))  // all-zero = all keys released
+                if (onPhysicalKeyUp(event)) {
+                    sendCurrentKeyboardReport(service)
+                }
                 true
             }
-            else -> super.dispatchKeyEvent(event)
+            KeyEvent.ACTION_MULTIPLE -> true
+            else -> true
         }
     }
 
     // -------------------------------------------------------------------------
-    // Touch → trackpad
+    // Touch to trackpad
     // -------------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -325,7 +338,7 @@ class InputInterceptorActivity : AppCompatActivity(),
             return true
         }
 
-        // Touch pad — disabled when USB mouse is connected
+        // Touch pad - disabled when USB mouse is connected
         if (externalMouseConnected) return true
 
         when (event.actionMasked) {
@@ -458,28 +471,98 @@ class InputInterceptorActivity : AppCompatActivity(),
         service.sendMouseReport(byteArrayOf(0x01, 0x00, 0x00, 0x00))
     }
 
-    private fun buildKeyboardReport(event: KeyEvent): ByteArray {
-        val baseModifiers = AzertyToQwertyMapper.getModifierByte(event.metaState)
-        val printableMapping = resolvePrintableHidUsage(event)
+    private fun resetKeyboardState(service: IBluetoothSender? = null) {
+        val hadKeyboardState = pressedModifierMask != 0 ||
+            pressedHidKeysByKeyCode.isNotEmpty() ||
+            syntheticShiftKeyCodes.isNotEmpty()
+        pressedModifierMask = 0
+        pressedHidKeysByKeyCode.clear()
+        syntheticShiftKeyCodes.clear()
+        if (hadKeyboardState && service != null) {
+            service.sendKeyboardReport(ByteArray(8))
+        }
+    }
 
-        if (printableMapping != null) {
-            val (usage, shiftRequired) = printableMapping
-            val modifiersWithoutShift = (baseModifiers.toInt() and 0xFF) and SHIFT_MODIFIER_MASK.inv()
-            val printableModifiers = if (shiftRequired) {
-                modifiersWithoutShift or LEFT_SHIFT_MODIFIER
-            } else {
-                modifiersWithoutShift
-            }
-            return byteArrayOf(
-                printableModifiers.toByte(),
-                0x00,
-                usage,
-                0x00, 0x00, 0x00, 0x00, 0x00
-            )
+    private fun isPhysicalKeyboardEvent(event: KeyEvent): Boolean {
+        val device = InputDevice.getDevice(event.deviceId) ?: return false
+        val hasKeyboardSource =
+            device.sources and InputDevice.SOURCE_KEYBOARD == InputDevice.SOURCE_KEYBOARD
+        return hasKeyboardSource &&
+            device.keyboardType != InputDevice.KEYBOARD_TYPE_NONE &&
+            !device.isVirtual
+    }
+
+    private fun onPhysicalKeyDown(event: KeyEvent): Boolean {
+        val modifierMask = modifierMaskForKeyCode(event.keyCode)
+        if (modifierMask != 0) {
+            val updatedMask = pressedModifierMask or modifierMask
+            val changed = updatedMask != pressedModifierMask
+            pressedModifierMask = updatedMask
+            return changed
         }
 
+        val mapping = resolveHidUsageForEvent(event) ?: return false
+        val (usage, requiresSyntheticShift) = mapping
+
+        val previousUsage = pressedHidKeysByKeyCode.put(event.keyCode, usage)
+        val usageChanged = previousUsage != usage
+
+        val hadSyntheticShift = syntheticShiftKeyCodes.contains(event.keyCode)
+        if (requiresSyntheticShift) syntheticShiftKeyCodes.add(event.keyCode)
+        else syntheticShiftKeyCodes.remove(event.keyCode)
+        val syntheticShiftChanged = hadSyntheticShift != requiresSyntheticShift
+
+        return usageChanged || syntheticShiftChanged
+    }
+
+    private fun onPhysicalKeyUp(event: KeyEvent): Boolean {
+        val modifierMask = modifierMaskForKeyCode(event.keyCode)
+        if (modifierMask != 0) {
+            val updatedMask = pressedModifierMask and modifierMask.inv()
+            val changed = updatedMask != pressedModifierMask
+            pressedModifierMask = updatedMask
+            return changed
+        }
+
+        val usageRemoved = pressedHidKeysByKeyCode.remove(event.keyCode) != null
+        val syntheticShiftRemoved = syntheticShiftKeyCodes.remove(event.keyCode)
+        return usageRemoved || syntheticShiftRemoved
+    }
+
+    private fun sendCurrentKeyboardReport(service: IBluetoothSender) {
+        val report = ByteArray(8)
+        val syntheticShiftMask = if (syntheticShiftKeyCodes.isNotEmpty()) LEFT_SHIFT_MODIFIER else 0
+        report[0] = (pressedModifierMask or syntheticShiftMask).toByte()
+
+        var reportIndex = 2
+        val uniqueUsages = linkedSetOf<Byte>()
+        for (usage in pressedHidKeysByKeyCode.values) {
+            if (usage == 0.toByte()) continue
+            if (uniqueUsages.add(usage) && uniqueUsages.size >= MAX_SIMULTANEOUS_HID_KEYS) break
+        }
+        for (usage in uniqueUsages) {
+            if (reportIndex >= report.size) break
+            report[reportIndex++] = usage
+        }
+        service.sendKeyboardReport(report)
+    }
+
+    private fun resolveHidUsageForEvent(event: KeyEvent): Pair<Byte, Boolean>? {
+        resolvePrintableHidUsage(event)?.let { return it }
         val usage = AzertyToQwertyMapper.getHidUsage(event.keyCode)
-        return byteArrayOf(baseModifiers, 0x00, usage, 0x00, 0x00, 0x00, 0x00, 0x00)
+        return if (usage == 0.toByte()) null else Pair(usage, false)
+    }
+
+    private fun modifierMaskForKeyCode(keyCode: Int): Int = when (keyCode) {
+        KeyEvent.KEYCODE_CTRL_LEFT -> MOD_LEFT_CTRL
+        KeyEvent.KEYCODE_SHIFT_LEFT -> MOD_LEFT_SHIFT
+        KeyEvent.KEYCODE_ALT_LEFT -> MOD_LEFT_ALT
+        KeyEvent.KEYCODE_META_LEFT -> MOD_LEFT_GUI
+        KeyEvent.KEYCODE_CTRL_RIGHT -> MOD_RIGHT_CTRL
+        KeyEvent.KEYCODE_SHIFT_RIGHT -> MOD_RIGHT_SHIFT
+        KeyEvent.KEYCODE_ALT_RIGHT -> MOD_RIGHT_ALT
+        KeyEvent.KEYCODE_META_RIGHT -> MOD_RIGHT_GUI
+        else -> 0
     }
 
     private fun resolvePrintableHidUsage(event: KeyEvent): Pair<Byte, Boolean>? {
@@ -636,7 +719,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     }
 
     // -------------------------------------------------------------------------
-    // InputDeviceListener – USB mouse hot-plug detection
+    // InputDeviceListener - USB mouse hot-plug detection
     // -------------------------------------------------------------------------
 
     override fun onInputDeviceAdded(deviceId: Int) {
@@ -743,7 +826,17 @@ class InputInterceptorActivity : AppCompatActivity(),
         private const val DRAG_HOLD_TIMEOUT_MS = 220L
         private const val TAP_SLOP_PX    = 10f
         private const val MAX_CLICK_POINTERS = 2
+        private const val MAX_SIMULTANEOUS_HID_KEYS = 6
+        private const val MOD_LEFT_CTRL = 0x01
         private const val LEFT_SHIFT_MODIFIER = 0x02
-        private const val SHIFT_MODIFIER_MASK = 0x22
+        private const val MOD_LEFT_SHIFT = 0x02
+        private const val MOD_LEFT_ALT = 0x04
+        private const val MOD_LEFT_GUI = 0x08
+        private const val MOD_RIGHT_CTRL = 0x10
+        private const val MOD_RIGHT_SHIFT = 0x20
+        private const val MOD_RIGHT_ALT = 0x40
+        private const val MOD_RIGHT_GUI = 0x80
     }
 }
+
+
