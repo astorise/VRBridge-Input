@@ -66,6 +66,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var externalMouseConnected = false
     private var physicalKeyboardConnected = false
     private var questConnected = false
+    private var lastMouseButtons: Byte = 0x00
 
     // Touch tracking for trackpad
     private var lastTouchX = 0f
@@ -74,6 +75,9 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var primaryPointerId = MotionEvent.INVALID_POINTER_ID
     private var maxPointersSeen = 0
     private var tapGestureCancelled = false
+    private var rightClickSent = false
+    private var secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+    private var secondaryTapStartTime = 0L
     private val pointerDownPositions = mutableMapOf<Int, Pair<Float, Float>>()
 
     // -------------------------------------------------------------------------
@@ -263,13 +267,9 @@ class InputInterceptorActivity : AppCompatActivity(),
 
         val service: IBluetoothSender = hidService ?: return super.dispatchKeyEvent(event)
 
-        val modifiers = AzertyToQwertyMapper.getModifierByte(event.metaState)
-        val usage     = AzertyToQwertyMapper.getHidUsage(event.keyCode)
-
         return when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                val report = byteArrayOf(modifiers, 0x00, usage, 0x00, 0x00, 0x00, 0x00, 0x00)
-                service.sendKeyboardReport(report)
+                service.sendKeyboardReport(buildKeyboardReport(event))
                 true
             }
             KeyEvent.ACTION_UP -> {
@@ -295,6 +295,7 @@ class InputInterceptorActivity : AppCompatActivity(),
                 MotionEvent.ACTION_DOWN -> {
                     lastTouchX = event.x
                     lastTouchY = event.y
+                    lastMouseButtons = buttons
                     service.sendMouseReport(byteArrayOf(buttons, 0x00, 0x00, 0x00))
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -302,11 +303,17 @@ class InputInterceptorActivity : AppCompatActivity(),
                     val dy = (event.y - lastTouchY).roundToInt().clampToByte()
                     lastTouchX = event.x
                     lastTouchY = event.y
-                    if (dx != 0 || dy != 0) {
+                    if (dx != 0 || dy != 0 || buttons != lastMouseButtons) {
                         service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), 0x00))
                     }
+                    lastMouseButtons = buttons
                 }
                 MotionEvent.ACTION_UP -> {
+                    lastMouseButtons = 0x00
+                    service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    lastMouseButtons = 0x00
                     service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                 }
             }
@@ -343,6 +350,7 @@ class InputInterceptorActivity : AppCompatActivity(),
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 updateTapGestureState(event)
+                sendRelaxedRightClickIfEligible(service, event)
                 onPointerUp(event)
             }
             MotionEvent.ACTION_UP -> {
@@ -373,10 +381,12 @@ class InputInterceptorActivity : AppCompatActivity(),
         val scroll = (-event.getAxisValue(MotionEvent.AXIS_VSCROLL)).roundToInt().clampToByte()
 
         val buttons = buildMouseButtonByte(event.buttonState)
+        val buttonStateChanged = buttons != lastMouseButtons
 
-        if (dx != 0 || dy != 0 || scroll != 0 || buttons.toInt() != 0) {
+        if (dx != 0 || dy != 0 || scroll != 0 || buttonStateChanged) {
             service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), scroll.toByte()))
         }
+        lastMouseButtons = buttons
         return true
     }
 
@@ -392,6 +402,46 @@ class InputInterceptorActivity : AppCompatActivity(),
         return b.toByte()
     }
 
+    private fun buildKeyboardReport(event: KeyEvent): ByteArray {
+        val baseModifiers = AzertyToQwertyMapper.getModifierByte(event.metaState)
+        val printableMapping = resolvePrintableHidUsage(event)
+
+        if (printableMapping != null) {
+            val (usage, shiftRequired) = printableMapping
+            val modifiersWithoutShift = (baseModifiers.toInt() and 0xFF) and SHIFT_MODIFIER_MASK.inv()
+            val printableModifiers = if (shiftRequired) {
+                modifiersWithoutShift or LEFT_SHIFT_MODIFIER
+            } else {
+                modifiersWithoutShift
+            }
+            return byteArrayOf(
+                printableModifiers.toByte(),
+                0x00,
+                usage,
+                0x00, 0x00, 0x00, 0x00, 0x00
+            )
+        }
+
+        val usage = AzertyToQwertyMapper.getHidUsage(event.keyCode)
+        return byteArrayOf(baseModifiers, 0x00, usage, 0x00, 0x00, 0x00, 0x00, 0x00)
+    }
+
+    private fun resolvePrintableHidUsage(event: KeyEvent): Pair<Byte, Boolean>? {
+        if (!event.isPrintingKey) return null
+
+        val unicodeWithMeta = event.getUnicodeChar(event.metaState)
+        if (unicodeWithMeta != 0) {
+            val mappedWithMeta = charToHidUsage(unicodeWithMeta.toChar())
+            if (mappedWithMeta != null) return mappedWithMeta
+        }
+
+        val unicodeWithoutMeta = event.getUnicodeChar(0)
+        if (unicodeWithoutMeta != 0) {
+            return charToHidUsage(unicodeWithoutMeta.toChar())
+        }
+        return null
+    }
+
     private fun Int.clampToByte(): Int = this.coerceIn(-127, 127)
 
     private fun startTouchGesture(event: MotionEvent) {
@@ -401,6 +451,9 @@ class InputInterceptorActivity : AppCompatActivity(),
         touchGestureStartTime = event.eventTime
         maxPointersSeen = 1
         tapGestureCancelled = false
+        rightClickSent = false
+        secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+        secondaryTapStartTime = 0L
         pointerDownPositions.clear()
         pointerDownPositions[primaryPointerId] = event.x to event.y
     }
@@ -411,6 +464,18 @@ class InputInterceptorActivity : AppCompatActivity(),
         maxPointersSeen = maxOf(maxPointersSeen, event.pointerCount)
         if (maxPointersSeen > MAX_CLICK_POINTERS) {
             tapGestureCancelled = true
+            secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+            secondaryTapStartTime = 0L
+            return
+        }
+        if (event.pointerCount == 2 &&
+            pointerId != primaryPointerId &&
+            !tapGestureCancelled &&
+            !rightClickSent &&
+            isPointerStillWithinTapSlop(primaryPointerId, event)
+        ) {
+            secondaryTapPointerId = pointerId
+            secondaryTapStartTime = event.eventTime
         }
     }
 
@@ -418,10 +483,10 @@ class InputInterceptorActivity : AppCompatActivity(),
         if (tapGestureCancelled) return
         for (index in 0 until event.pointerCount) {
             val pointerId = event.getPointerId(index)
-            val down = pointerDownPositions[pointerId] ?: continue
-            val totalMove = abs(event.getX(index) - down.first) + abs(event.getY(index) - down.second)
-            if (totalMove >= TAP_SLOP_PX) {
+            if (!isPointerStillWithinTapSlop(pointerId, event, index)) {
                 tapGestureCancelled = true
+                secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+                secondaryTapStartTime = 0L
                 return
             }
         }
@@ -430,6 +495,10 @@ class InputInterceptorActivity : AppCompatActivity(),
     private fun onPointerUp(event: MotionEvent) {
         val liftedPointerId = event.getPointerId(event.actionIndex)
         pointerDownPositions.remove(liftedPointerId)
+        if (liftedPointerId == secondaryTapPointerId) {
+            secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+            secondaryTapStartTime = 0L
+        }
         if (liftedPointerId != primaryPointerId) return
 
         primaryPointerId = MotionEvent.INVALID_POINTER_ID
@@ -442,8 +511,48 @@ class InputInterceptorActivity : AppCompatActivity(),
         }
     }
 
+    private fun isPointerStillWithinTapSlop(
+        pointerId: Int,
+        event: MotionEvent,
+        pointerIndex: Int = event.findPointerIndex(pointerId)
+    ): Boolean {
+        if (pointerIndex == -1) return true
+        val down = pointerDownPositions[pointerId] ?: return true
+        val totalMove = abs(event.getX(pointerIndex) - down.first) + abs(event.getY(pointerIndex) - down.second)
+        return totalMove < TAP_SLOP_PX
+    }
+
+    private fun sendMouseClick(service: IBluetoothSender, button: Byte) {
+        service.sendMouseReport(byteArrayOf(button, 0x00, 0x00, 0x00))
+        service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+    }
+
+    private fun sendRelaxedRightClickIfEligible(service: IBluetoothSender, event: MotionEvent) {
+        if (rightClickSent || tapGestureCancelled) return
+        if (event.pointerCount != 2 || maxPointersSeen != 2) return
+
+        val liftedPointerId = event.getPointerId(event.actionIndex)
+        if (liftedPointerId != secondaryTapPointerId) return
+
+        val secondaryElapsed = event.eventTime - secondaryTapStartTime
+        if (secondaryElapsed >= SECONDARY_TAP_TIMEOUT_MS) return
+
+        sendMouseClick(service, 0x02)
+        rightClickSent = true
+        tapGestureCancelled = true
+    }
+
     private fun sendTapClickIfEligible(service: IBluetoothSender, event: MotionEvent) {
-        if (tapGestureCancelled) return
+        if (tapGestureCancelled || rightClickSent) return
+
+        if (maxPointersSeen == 2 && secondaryTapStartTime != 0L) {
+            val secondaryElapsed = event.eventTime - secondaryTapStartTime
+            if (secondaryElapsed < SECONDARY_TAP_TIMEOUT_MS) {
+                sendMouseClick(service, 0x02)
+                rightClickSent = true
+                return
+            }
+        }
 
         val elapsed = event.eventTime - touchGestureStartTime
         if (elapsed >= TAP_TIMEOUT_MS) return
@@ -454,8 +563,7 @@ class InputInterceptorActivity : AppCompatActivity(),
             else -> return
         }
 
-        service.sendMouseReport(byteArrayOf(button, 0x00, 0x00, 0x00))
-        service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+        sendMouseClick(service, button)
     }
 
     private fun resetTouchGesture() {
@@ -463,6 +571,9 @@ class InputInterceptorActivity : AppCompatActivity(),
         touchGestureStartTime = 0L
         maxPointersSeen = 0
         tapGestureCancelled = false
+        rightClickSent = false
+        secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
+        secondaryTapStartTime = 0L
         pointerDownPositions.clear()
     }
 
@@ -516,7 +627,7 @@ class InputInterceptorActivity : AppCompatActivity(),
 
     private fun sendCharAsHidKeystroke(service: IBluetoothSender, ch: Char) {
         val (usage, shift) = charToHidUsage(ch) ?: return
-        val modifier: Byte = if (shift) 0x02 else 0x00  // Left Shift
+        val modifier: Byte = if (shift) LEFT_SHIFT_MODIFIER.toByte() else 0x00  // Left Shift
         val report = byteArrayOf(modifier, 0x00, usage, 0x00, 0x00, 0x00, 0x00, 0x00)
         service.sendKeyboardReport(report)
         service.sendKeyboardReport(ByteArray(8))  // release
@@ -570,7 +681,10 @@ class InputInterceptorActivity : AppCompatActivity(),
 
     companion object {
         private const val TAP_TIMEOUT_MS = 200L
+        private const val SECONDARY_TAP_TIMEOUT_MS = 350L
         private const val TAP_SLOP_PX    = 10f
         private const val MAX_CLICK_POINTERS = 2
+        private const val LEFT_SHIFT_MODIFIER = 0x02
+        private const val SHIFT_MODIFIER_MASK = 0x22
     }
 }
