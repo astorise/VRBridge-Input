@@ -67,6 +67,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var physicalKeyboardConnected = false
     private var questConnected = false
     private var lastMouseButtons: Byte = 0x00
+    private var latchedMouseButtons: Byte = 0x00
 
     // Touch tracking for trackpad
     private var lastTouchX = 0f
@@ -78,6 +79,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     private var rightClickSent = false
     private var secondaryTapPointerId = MotionEvent.INVALID_POINTER_ID
     private var secondaryTapStartTime = 0L
+    private var touchDragActive = false
     private val pointerDownPositions = mutableMapOf<Int, Pair<Float, Float>>()
 
     // -------------------------------------------------------------------------
@@ -290,15 +292,16 @@ class InputInterceptorActivity : AppCompatActivity(),
 
         // Mouse drag (button held + move) arrives here as touch events
         if (isFromMouse) {
-            val buttons = buildMouseButtonByte(event.buttonState)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    val buttons = effectiveMouseButtons(event)
                     lastTouchX = event.x
                     lastTouchY = event.y
                     lastMouseButtons = buttons
                     service.sendMouseReport(byteArrayOf(buttons, 0x00, 0x00, 0x00))
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    val buttons = effectiveMouseButtons(event)
                     val dx = (event.x - lastTouchX).roundToInt().clampToByte()
                     val dy = (event.y - lastTouchY).roundToInt().clampToByte()
                     lastTouchX = event.x
@@ -309,10 +312,12 @@ class InputInterceptorActivity : AppCompatActivity(),
                     lastMouseButtons = buttons
                 }
                 MotionEvent.ACTION_UP -> {
+                    latchedMouseButtons = 0x00
                     lastMouseButtons = 0x00
                     service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    latchedMouseButtons = 0x00
                     lastMouseButtons = 0x00
                     service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
                 }
@@ -330,20 +335,26 @@ class InputInterceptorActivity : AppCompatActivity(),
             MotionEvent.ACTION_POINTER_DOWN -> {
                 rememberPointerDown(event, event.actionIndex)
                 updateTapGestureState(event)
+                if (touchDragActive) {
+                    touchDragActive = false
+                    service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 updateTapGestureState(event)
                 if (event.pointerCount == 1) {
                     val primaryIndex = event.findPointerIndex(primaryPointerId)
                     if (primaryIndex != -1) {
+                        maybeStartTouchDrag(service, event, primaryIndex)
                         val x = event.getX(primaryIndex)
                         val y = event.getY(primaryIndex)
                         val dx = (x - lastTouchX).roundToInt().clampToByte()
                         val dy = (y - lastTouchY).roundToInt().clampToByte()
                         lastTouchX = x
                         lastTouchY = y
+                        val dragButton: Byte = if (touchDragActive) 0x01 else 0x00
                         if (dx != 0 || dy != 0) {
-                            service.sendMouseReport(byteArrayOf(0x00, dx.toByte(), dy.toByte(), 0x00))
+                            service.sendMouseReport(byteArrayOf(dragButton, dx.toByte(), dy.toByte(), 0x00))
                         }
                     }
                 }
@@ -355,10 +366,19 @@ class InputInterceptorActivity : AppCompatActivity(),
             }
             MotionEvent.ACTION_UP -> {
                 updateTapGestureState(event)
-                sendTapClickIfEligible(service, event)
+                if (touchDragActive) {
+                    touchDragActive = false
+                    service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                } else {
+                    sendTapClickIfEligible(service, event)
+                }
                 resetTouchGesture()
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (touchDragActive) {
+                    touchDragActive = false
+                    service.sendMouseReport(byteArrayOf(0x00, 0x00, 0x00, 0x00))
+                }
                 resetTouchGesture()
             }
         }
@@ -380,7 +400,7 @@ class InputInterceptorActivity : AppCompatActivity(),
         val dy     = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y).roundToInt().clampToByte()
         val scroll = (-event.getAxisValue(MotionEvent.AXIS_VSCROLL)).roundToInt().clampToByte()
 
-        val buttons = buildMouseButtonByte(event.buttonState)
+        val buttons = effectiveMouseButtons(event)
         val buttonStateChanged = buttons != lastMouseButtons
 
         if (dx != 0 || dy != 0 || scroll != 0 || buttonStateChanged) {
@@ -400,6 +420,42 @@ class InputInterceptorActivity : AppCompatActivity(),
         if (buttonState and MotionEvent.BUTTON_SECONDARY != 0) b = b or 0x02
         if (buttonState and MotionEvent.BUTTON_TERTIARY  != 0) b = b or 0x04
         return b.toByte()
+    }
+
+    private fun effectiveMouseButtons(event: MotionEvent): Byte {
+        val reportedButtons = buildMouseButtonByte(event.buttonState)
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL -> {
+                latchedMouseButtons = 0x00
+                0x00
+            }
+            MotionEvent.ACTION_BUTTON_PRESS,
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                latchedMouseButtons = reportedButtons
+                reportedButtons
+            }
+            else -> {
+                if (reportedButtons.toInt() != 0) {
+                    latchedMouseButtons = reportedButtons
+                    reportedButtons
+                } else {
+                    latchedMouseButtons
+                }
+            }
+        }
+    }
+
+    private fun maybeStartTouchDrag(service: IBluetoothSender, event: MotionEvent, primaryIndex: Int) {
+        if (touchDragActive || tapGestureCancelled || rightClickSent) return
+        if (maxPointersSeen != 1) return
+        val elapsed = event.eventTime - touchGestureStartTime
+        if (elapsed < DRAG_HOLD_TIMEOUT_MS) return
+        if (!isPointerStillWithinTapSlop(primaryPointerId, event, primaryIndex)) return
+
+        touchDragActive = true
+        tapGestureCancelled = true
+        service.sendMouseReport(byteArrayOf(0x01, 0x00, 0x00, 0x00))
     }
 
     private fun buildKeyboardReport(event: KeyEvent): ByteArray {
@@ -449,6 +505,7 @@ class InputInterceptorActivity : AppCompatActivity(),
         lastTouchX = event.x
         lastTouchY = event.y
         touchGestureStartTime = event.eventTime
+        touchDragActive = false
         maxPointersSeen = 1
         tapGestureCancelled = false
         rightClickSent = false
@@ -569,6 +626,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     private fun resetTouchGesture() {
         primaryPointerId = MotionEvent.INVALID_POINTER_ID
         touchGestureStartTime = 0L
+        touchDragActive = false
         maxPointersSeen = 0
         tapGestureCancelled = false
         rightClickSent = false
@@ -682,6 +740,7 @@ class InputInterceptorActivity : AppCompatActivity(),
     companion object {
         private const val TAP_TIMEOUT_MS = 200L
         private const val SECONDARY_TAP_TIMEOUT_MS = 350L
+        private const val DRAG_HOLD_TIMEOUT_MS = 220L
         private const val TAP_SLOP_PX    = 10f
         private const val MAX_CLICK_POINTERS = 2
         private const val LEFT_SHIFT_MODIFIER = 0x02
