@@ -290,7 +290,6 @@ class InputInterceptorActivity : AppCompatActivity(),
                 }
                 true
             }
-            KeyEvent.ACTION_MULTIPLE -> true
             else -> true
         }
     }
