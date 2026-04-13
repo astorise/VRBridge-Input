@@ -121,6 +121,25 @@ object AzertyToQwertyMapper {
         KeyEvent.KEYCODE_DPAD_DOWN     -> 0x51.toByte()
         KeyEvent.KEYCODE_DPAD_UP       -> 0x52.toByte()
 
+        // ----- Numpad -----
+        KeyEvent.KEYCODE_NUM_LOCK       -> 0x53.toByte()
+        KeyEvent.KEYCODE_NUMPAD_DIVIDE  -> 0x54.toByte()
+        KeyEvent.KEYCODE_NUMPAD_MULTIPLY-> 0x55.toByte()
+        KeyEvent.KEYCODE_NUMPAD_SUBTRACT-> 0x56.toByte()
+        KeyEvent.KEYCODE_NUMPAD_ADD     -> 0x57.toByte()
+        KeyEvent.KEYCODE_NUMPAD_ENTER   -> 0x58.toByte()
+        KeyEvent.KEYCODE_NUMPAD_1       -> 0x59.toByte()
+        KeyEvent.KEYCODE_NUMPAD_2       -> 0x5A.toByte()
+        KeyEvent.KEYCODE_NUMPAD_3       -> 0x5B.toByte()
+        KeyEvent.KEYCODE_NUMPAD_4       -> 0x5C.toByte()
+        KeyEvent.KEYCODE_NUMPAD_5       -> 0x5D.toByte()
+        KeyEvent.KEYCODE_NUMPAD_6       -> 0x5E.toByte()
+        KeyEvent.KEYCODE_NUMPAD_7       -> 0x5F.toByte()
+        KeyEvent.KEYCODE_NUMPAD_8       -> 0x60.toByte()
+        KeyEvent.KEYCODE_NUMPAD_9       -> 0x61.toByte()
+        KeyEvent.KEYCODE_NUMPAD_0       -> 0x62.toByte()
+        KeyEvent.KEYCODE_NUMPAD_DOT     -> 0x63.toByte()
+
         // Modifier keycodes — these are handled via getModifierByte(); return 0 here
         KeyEvent.KEYCODE_CTRL_LEFT,
         KeyEvent.KEYCODE_CTRL_RIGHT,

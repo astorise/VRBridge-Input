@@ -57,6 +57,7 @@ class HidForegroundService : Service(), IBluetoothSender {
 
     override fun onCreate() {
         super.onCreate()
+        boundInstance = this
         createNotificationChannel()
         ensureHidProfileReady()
     }
@@ -74,6 +75,7 @@ class HidForegroundService : Service(), IBluetoothSender {
     }
 
     override fun onDestroy() {
+        boundInstance = null
         if (hasBluetoothPermissions()) {
             hidDevice?.unregisterApp()
         }
@@ -248,5 +250,10 @@ class HidForegroundService : Service(), IBluetoothSender {
         private const val TAG        = "VRBridgeHID"
         private const val CHANNEL_ID = "hid_service"
         private const val NOTIF_ID   = 1
+
+        /** Accessible by [KeyboardAccessibilityService] to send HID reports. */
+        @Volatile
+        var boundInstance: HidForegroundService? = null
+            private set
     }
 }

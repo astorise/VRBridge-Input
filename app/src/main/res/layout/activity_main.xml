@@ -8,6 +8,21 @@
     android:fitsSystemWindows="false"
     android:background="@android:color/white">
 
+    <!-- Accessibility service status -->
+    <TextView
+        android:id="@+id/tvAccessibilityStatus"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:padding="10dp"
+        android:text="@string/a11y_status_inactive"
+        android:textColor="@android:color/white"
+        android:textSize="13sp"
+        android:background="#555555"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
     <!-- Trackpad hint -->
     <TextView
         android:id="@+id/tvTrackpadHint"
@@ -18,7 +33,7 @@
         android:text="@string/trackpad_hint"
         android:textColor="#888888"
         android:textSize="12sp"
-        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvAccessibilityStatus"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
@@ -28,6 +43,8 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:background="#F0F0F0"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
         app:layout_constraintTop_toBottomOf="@id/tvTrackpadHint"
         app:layout_constraintBottom_toTopOf="@id/etKeyboardInput"
         app:layout_constraintStart_toStartOf="parent"

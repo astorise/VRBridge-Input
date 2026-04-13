@@ -3,6 +3,9 @@
     <string name="app_name">VRBridge Input</string>
     <string name="status_disconnected">● Disconnected — waiting for Quest 3</string>
     <string name="status_connected">● Connected to %1$s</string>
-    <string name="trackpad_hint">Swipe to move cursor · Tap to click · Two-finger tap for right-click</string>
+    <string name="trackpad_hint">Swipe to move cursor · Tap to click · Keep one finger down, tap another for right-click</string>
     <string name="keyboard_input_hint">Tap here to type with virtual keyboard…</string>
+    <string name="a11y_status_active">Background mode — AccessibilityService active</string>
+    <string name="a11y_status_inactive">Foreground mode — keep app open for keyboard</string>
+    <string name="accessibility_service_description">Intercepts physical keyboard events and forwards them as Bluetooth HID reports to the connected Meta Quest 3. Enable this to use the keyboard even when the app is in the background or the screen is off.</string>
 </resources>

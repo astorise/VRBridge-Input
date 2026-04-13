@@ -11,12 +11,15 @@ import android.content.res.Configuration
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
+import android.text.TextUtils
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import androidx.activity.result.contract.ActivityResultContracts
@@ -116,11 +119,25 @@ class InputInterceptorActivity : AppCompatActivity(),
             insets
         }
 
+        // Keep screen on while in foreground (fallback mode needs this)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         inputManager = getSystemService(INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(this, null)
         externalMouseConnected = hasExternalMouse()
         physicalKeyboardConnected = hasPhysicalKeyboard()
         updateKeyboardInputVisibility()
+        updateAccessibilityStatus()
+
+        // Pointer capture: click trackpad area to capture the pointer (infinite mouse)
+        binding.trackpadArea.setOnClickListener {
+            it.requestPointerCapture()
+        }
+        binding.trackpadArea.setOnCapturedPointerListener { _, event ->
+            val service: IBluetoothSender = hidService ?: return@setOnCapturedPointerListener false
+            handleCapturedPointerEvent(service, event)
+            true
+        }
 
         binding.etKeyboardInput.addTextChangedListener(object : TextWatcher {
             private var previousText = ""
@@ -155,6 +172,7 @@ class InputInterceptorActivity : AppCompatActivity(),
 
     override fun onStart() {
         super.onStart()
+        updateAccessibilityStatus()
         if (bluetoothPermissionsGranted) {
             bindHidService()
         }
@@ -267,6 +285,12 @@ class InputInterceptorActivity : AppCompatActivity(),
     // -------------------------------------------------------------------------
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // If the AccessibilityService is handling keyboard input, let events pass through
+        // (they are already consumed at the system level by KeyboardAccessibilityService)
+        if (KeyboardAccessibilityService.isActive()) {
+            return super.dispatchKeyEvent(event)
+        }
+
         val fromPhysicalKeyboard = isPhysicalKeyboardEvent(event)
         if (!fromPhysicalKeyboard && binding.etKeyboardInput.hasFocus()) {
             return super.dispatchKeyEvent(event)
@@ -774,6 +798,57 @@ class InputInterceptorActivity : AppCompatActivity(),
     private fun updateKeyboardInputVisibility() {
         val show = questConnected && !physicalKeyboardConnected
         binding.etKeyboardInput.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    // -------------------------------------------------------------------------
+    // Pointer capture (infinite mouse movement)
+    // -------------------------------------------------------------------------
+
+    private fun handleCapturedPointerEvent(service: IBluetoothSender, event: MotionEvent) {
+        val dx = event.x.roundToInt().clampToByte()
+        val dy = event.y.roundToInt().clampToByte()
+        val buttons = buildMouseButtonByte(event.buttonState)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                if (dx != 0 || dy != 0 || buttons != lastMouseButtons) {
+                    service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), 0x00))
+                }
+                lastMouseButtons = buttons
+            }
+            MotionEvent.ACTION_BUTTON_PRESS,
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                service.sendMouseReport(byteArrayOf(buttons, dx.toByte(), dy.toByte(), 0x00))
+                lastMouseButtons = buttons
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Accessibility service status
+    // -------------------------------------------------------------------------
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val componentName = ComponentName(this, KeyboardAccessibilityService::class.java).flattenToString()
+        return TextUtils.SimpleStringSplitter(':').let { splitter ->
+            splitter.setString(enabledServices)
+            splitter.any { it == componentName }
+        }
+    }
+
+    private fun updateAccessibilityStatus() {
+        val a11yActive = isAccessibilityServiceEnabled()
+        if (a11yActive) {
+            binding.tvAccessibilityStatus.text = getString(R.string.a11y_status_active)
+            binding.tvAccessibilityStatus.setBackgroundColor(0xFF006400.toInt())
+        } else {
+            binding.tvAccessibilityStatus.text = getString(R.string.a11y_status_inactive)
+            binding.tvAccessibilityStatus.setBackgroundColor(0xFF555555.toInt())
+        }
     }
 
     private fun sendCharAsHidKeystroke(service: IBluetoothSender, ch: Char) {
